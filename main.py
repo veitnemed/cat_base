@@ -15,8 +15,6 @@ from tkinter import messagebox
 from tkinter import simpledialog  # уже должно быть
 import traceback
 
-
-
 # --- Tooltip infra (минимальная) ---
 if "_bind_tooltip" not in globals():
     class _HoverTip:
@@ -406,6 +404,52 @@ xl_hints_112 = set()
 xl_hints_114 = set()
 xl_hints_161 = set()
 
+work_widgets, storage_widgets, header_widgets, date_header_widgets = {}, {}, {}, {}
+
+# --- сворачивание секций заводов ---
+collapsed_factories_work = {
+    "ВС6Д": set(),
+    "ВС7": set(),
+}
+collapsed_factories_storage = set()
+
+
+def _is_factory_collapsed(which: str, factory: str, variant: str = None) -> bool:
+    """
+    which:
+      - 'work'
+      - 'storage'
+    """
+    if which == "storage":
+        return factory in collapsed_factories_storage
+
+    vv = variant or "ВС6Д"
+    return factory in collapsed_factories_work.setdefault(vv, set())
+
+
+def toggle_factory_collapse(which: str, factory: str, variant: str = None):
+    """
+    Переключение сворачивания секции завода.
+
+    which:
+      - 'work'    -> нужна ещё variant
+      - 'storage' -> variant не нужен
+    """
+    global collapsed_factories_work, collapsed_factories_storage
+
+    if which == "storage":
+        target = collapsed_factories_storage
+    else:
+        vv = variant or "ВС6Д"
+        target = collapsed_factories_work.setdefault(vv, set())
+
+    if factory in target:
+        target.remove(factory)
+    else:
+        target.add(factory)
+
+    # Перерисовываем списки, стараясь сохранить текущую прокрутку
+    update_product_list(preserve_scroll=True, regroup=True)
 
 def _xl_log(msg: str):
     # ЛОГИ XL ОТКЛЮЧЕНЫ: ничего не пишем на диск
@@ -3266,18 +3310,126 @@ def _get_current_comments():
             pass
     return current
 
-
-def _ensure_header(parent, hid, text, style, repack: bool = False):
+def _ensure_header(
+    parent,
+    hid,
+    text,
+    style,
+    repack: bool = False,
+    header_type: str = None,
+    factory: str = None,
+    variant: str = None,
+    which: str = None,
+    collapsed: bool = False,
+):
+    """
+    Обычные заголовки -> tb.Label
+    Заголовки заводов  -> tb.Frame + кнопка-стрелка + tb.Label
+    """
     w = header_widgets.get(hid)
+    is_factory_header = (header_type == "factory" and factory is not None)
+
+    def _pack_header(widget):
+        try:
+            widget.pack_forget()
+        except Exception:
+            pass
+
+        if getattr(widget, "is_factory_header", False):
+            widget.pack(fill=X, pady=(10, 0))
+            return
+
+        try:
+            style_name = str(widget.cget("style"))
+        except Exception:
+            style_name = ""
+
+        if "FactoryHeader" in style_name:
+            widget.pack(anchor="w", pady=(10, 0))
+        else:
+            widget.pack(anchor="w", padx=10, pady=(10, 5))
+
+    if is_factory_header:
+        arrow = "▸" if collapsed else "▾"
+
+        def _toggle():
+            toggle_factory_collapse(which=which or "work", factory=factory, variant=variant)
+
+        # если раньше под этим hid лежал не factory-header — пересоздадим
+        if w is not None and w.winfo_exists() and not getattr(w, "is_factory_header", False):
+            try:
+                w.destroy()
+            except Exception:
+                pass
+            w = None
+
+        if w is None or not w.winfo_exists():
+            wrap = tb.Frame(parent, style="Main.TFrame")
+            wrap._vid = hid
+            wrap.is_header = True
+            wrap.is_factory_header = True
+            wrap._factory = factory
+            wrap._variant = variant
+            wrap._which = which
+
+            btn = tb.Button(
+                wrap,
+                text=arrow,
+                width=3,
+                bootstyle="secondary",
+                padding=(4, 0),
+                command=_toggle,
+            )
+            btn.pack(side=LEFT, padx=(10, 6))
+
+            lbl = tb.Label(
+                wrap,
+                text=text,
+                style=style,
+            )
+            lbl.pack(side=LEFT, pady=0)
+
+            # по клику по тексту тоже удобно сворачивать/разворачивать
+            lbl.bind("<Button-1>", lambda e: _toggle())
+
+            wrap.toggle_btn = btn
+            wrap.text_lbl = lbl
+
+            header_widgets[hid] = wrap
+            w = wrap
+            _pack_header(w)
+        else:
+            try:
+                w.text_lbl.configure(text=text)
+            except Exception:
+                pass
+            try:
+                w.toggle_btn.configure(text=arrow, command=_toggle)
+            except Exception:
+                pass
+            try:
+                if str(w.text_lbl.cget("style")) != style:
+                    w.text_lbl.configure(style=style)
+            except Exception:
+                pass
+
+            w._factory = factory
+            w._variant = variant
+            w._which = which
+
+            if repack:
+                _pack_header(w)
+
+        return w
+
+    # ---------- обычные заголовки ----------
     if w is None or not w.winfo_exists():
         w = tb.Label(parent, text=text, style=style)
         w._vid = hid
         w.is_header = True
+        w.is_factory_header = False
         header_widgets[hid] = w
-        if "FactoryHeader" in str(style):
-            w.pack(anchor="w", pady=(10, 0))
-        else:
-            w.pack(anchor="w", padx=10, pady=(10, 5))
+        _pack_header(w)
     else:
         if str(w.cget("text")) != text:
             w.config(text=text)
@@ -3287,20 +3439,9 @@ def _ensure_header(parent, hid, text, style, repack: bool = False):
         except Exception:
             pass
         if repack:
-            try:
-                w.pack_forget()
-            except Exception:
-                pass
-            try:
-                style_name = str(w.cget("style"))
-            except Exception:
-                style_name = ""
-            if "FactoryHeader" in style_name:
-                w.pack(anchor="w", pady=(10, 0))
-            else:
-                w.pack(anchor="w", padx=10, pady=(10, 5))
-    return w
+            _pack_header(w)
 
+    return w
 
 def _ensure_row(
     parent,
@@ -3401,51 +3542,52 @@ def refresh_sort_buttons():
 
 sort_mode_button = None  # глобальный хэндл новой кнопки (серой)
 
-
 def update_sort_mode_button_visual():
     """
-    Кнопка всегда называется 'Сортировка'.
-    Цвет показывает режим:
-      - factories -> secondary (серая)
-      - drafts   -> warning   (жёлтая)
+    Кнопка включает/выключает режим 'Заготовки'.
     """
     if not sort_mode_button or not sort_mode_button.winfo_exists():
         return
 
     try:
-        # режим определяем по work_sort_mode
         if work_sort_mode == "drafts":
-            sort_mode_button.configure(text="Сортировка", bootstyle="info")
+            sort_mode_button.configure(text="Заготовки", bootstyle="info")
         else:
-            sort_mode_button.configure(text="Сортировка", bootstyle="secondary")
+            sort_mode_button.configure(text="Заготовки", bootstyle="secondary")
+    except Exception:
+        pass
+    
+    
+def cycle_sort_mode():
+    """
+    Единственная кнопка:
+    - если сейчас обычный режим -> включаем "Заготовки"
+    - если сейчас "Заготовки" -> выключаем и возвращаем обычный режим
+    """
+    global work_sort_mode, show_draft_group, blockcount_mode
+
+    if work_sort_mode == "drafts":
+        work_sort_mode = "factories"
+        show_draft_group = False
+    else:
+        work_sort_mode = "drafts"
+        show_draft_group = True
+
+    blockcount_mode = False
+
+    try:
+        set_puzzle_button_visual()
     except Exception:
         pass
 
-
-def cycle_sort_mode():
-    """
-    Переключаем только два режима:
-      factories <-> drafts
-    Режим 'blocks' убран.
-    """
-    if work_sort_mode == "drafts":
-        set_sort_mode("factories")
-    else:
-        set_sort_mode("drafts")
-    try:
-        print("SORT:", work_sort_mode,
-              "xl112=", len(xl_hints_112),
-              "xl114=", len(xl_hints_114),
-              "xl161=", len(xl_hints_161))
-    except Exception as e:
-        print("SORT debug error:", e)
-
-    # На всякий случай обновим цвет кнопки сразу
+    save_data(False)
+    update_product_list(preserve_scroll=False, regroup=True)
     update_sort_mode_button_visual()
 
 def refresh_lists():
     save_all_comments()
     update_product_list(preserve_scroll=False, regroup=True)
+
 
 def set_sort_mode(mode: str):
     """
@@ -3466,7 +3608,7 @@ def set_sort_mode(mode: str):
 
     # Ваша логика в _desired_work_sequence_variant использует show_draft_group / blockcount_mode
     show_draft_group = (mode == "drafts")
-    blockcount_mode = False   # <-- важно: кнопка сортировки больше не включает режим "по блокам"
+    blockcount_mode = True   # <-- важно: кнопка сортировки больше не включает режим "по блокам"
 
     # Если у вас есть 🧩-кнопка — пусть её подсветка тоже будет синхронизирована
     try:
@@ -3866,14 +4008,14 @@ def _desired_work_sequence_variant(current_comments, variant: str):
     """
     Унифицированная версия для ВС6Д и ВС7.
     Режимы:
-      - blockcount_mode: группы по числу установленных необходимых блоков (0..need)
+      - blockcount_mode: группы по числу установленных необходимых блоков
       - show_draft_group: «Заготовки» / «В ремонте» / «Остальные»
       - базовый режим: завод -> дата
-    Везде считаем только те блоки, которые требуются для данного варианта (block_types_for).
+
+    Сворачивание заводов работает в базовом режиме.
     """
     seq = []
 
-    # Собираем только этот вариант и только те, что «в работе»
     work_grouped = {factory: [] for factory in factory_order}
     for key, blocks in products.items():
         if get_variant(key) != variant:
@@ -3884,8 +4026,6 @@ def _desired_work_sequence_variant(current_comments, variant: str):
 
     sort_reverse = sort_order == "new_first"
 
-    # === ВАЖНО: ремонт только по блокам, которые реальны для ЭТОГО варианта ===
-    # (иначе ключ окажется «в ремонте», хотя видимых ремонтных кнопок нет)
     repair_keys = set()
     for rk, rb in repair_blocks:
         if get_variant(rk) != variant:
@@ -3893,13 +4033,12 @@ def _desired_work_sequence_variant(current_comments, variant: str):
         if rb in block_types_for(rk):
             repair_keys.add(rk)
 
-    # ------------------------ 1) Режим «по количеству блоков» ------------------------
+    # ------------------------ 1) Режим по количеству блоков ------------------------
     if blockcount_mode:
         flat_items = [
             item for factory in factory_order for item in work_grouped[factory]
         ]
 
-        # Максимум «нужных» блоков для этого варианта (обычно ВС6Д=3, ВС7=2)
         max_needed = 0
         for key, blocks in flat_items:
             _, need = installed_count_for(key, blocks)
@@ -3907,21 +4046,18 @@ def _desired_work_sequence_variant(current_comments, variant: str):
                 max_needed = need
 
         if max_needed == 0:
-            return seq  # на всякий случай
+            return seq
 
-        # Группы по count установленным нужным блокам
         groups = {i: [] for i in range(0, max_needed + 1)}
         for key, blocks in flat_items:
             cnt, _need = installed_count_for(key, blocks)
             groups[cnt].append((key, blocks))
 
-        # Выводим от полностью готовых к нулю
         for count in range(max_needed, -1, -1):
             items = groups[count]
             if not items:
                 continue
 
-            # внутри группы: сначала заготовки, затем дата, затем номер
             items.sort(
                 key=lambda item: (
                     0 if item[0] in draft_products else 1,
@@ -3933,7 +4069,7 @@ def _desired_work_sequence_variant(current_comments, variant: str):
             header_text = (
                 "Готовы к сборке"
                 if count == max_needed
-                else f"{count} " + _ru_plural(count) + " в наличии"
+                else f"{count} {_ru_plural(count)} в наличии"
             )
 
             seq.append(
@@ -3955,14 +4091,11 @@ def _desired_work_sequence_variant(current_comments, variant: str):
                         "show_factory_code": True,
                     }
                 )
-
         return seq
 
-    # ----------- 2) Режим «Заготовки / Ремонт / Остальные» -----------
+    # ------------------------ 2) Режим заготовок ------------------------
     if show_draft_group:
-        # --- Заготовки (только если НЕ в ремонте по «нужным» блокам) ---
         drafts = []
-
         for factory in factory_order:
             for key, blocks in work_grouped[factory]:
                 if key in draft_products and key not in repair_keys:
@@ -3970,12 +4103,14 @@ def _desired_work_sequence_variant(current_comments, variant: str):
 
         if drafts:
             seq.append(
-                {"kind": "header",
-                 "id": f"W{variant}:hdr:drafts",
-                 "text": f"Заготовки ({len(drafts)})",
-                 "style": "SectionHeader.TLabel"}
+                {
+                    "kind": "header",
+                    "id": f"W{variant}:hdr:drafts",
+                    "text": f"Заготовки ({len(drafts)})",
+                    "style": "SectionHeader.TLabel",
+                }
             )
-            # Группировка заготовок по числу установленных нужных блоков
+
             max_needed = 0
             for key, blocks in drafts:
                 _, need = installed_count_for(key, blocks)
@@ -3990,26 +4125,35 @@ def _desired_work_sequence_variant(current_comments, variant: str):
                 bucket = draft_groups[cnt]
                 if not bucket:
                     continue
-                header_text = "Готовы к сборке" if cnt == max_needed else f"{cnt} " + _ru_plural(cnt) + " в наличии"
+
+                header_text = "Готовы к сборке" if cnt == max_needed else f"{cnt} {_ru_plural(cnt)} в наличии"
                 seq.append(
-                    {"kind": "header",
-                     "id": f"W{variant}:hdr:drafts:{cnt}",
-                     "text": f"{header_text} ({len(bucket)})",
-                     "style": "Header3.TLabel"}
+                    {
+                        "kind": "header",
+                        "id": f"W{variant}:hdr:drafts:{cnt}",
+                        "text": f"{header_text} ({len(bucket)})",
+                        "style": "Header3.TLabel",
+                    }
                 )
+
                 bucket.sort(
                     key=lambda item: (
                         parse_date_str(product_dates.get(item[0], "01.01.00"), item[0]),
                         item[0][0],
                     )
                 )
+
                 for key, blocks in bucket:
                     seq.append(
-                        {"kind": "row", "key": key, "blocks": blocks,
-                         "in_storage": False, "show_factory_code": True}
+                        {
+                            "kind": "row",
+                            "key": key,
+                            "blocks": blocks,
+                            "in_storage": False,
+                            "show_factory_code": True,
+                        }
                     )
 
-        # --- Остальные: группировка по числу установленных нужных блоков ---
         others = []
         for factory in factory_order:
             for key, blocks in work_grouped[factory]:
@@ -4018,13 +4162,14 @@ def _desired_work_sequence_variant(current_comments, variant: str):
 
         if others:
             seq.append(
-                {"kind": "header",
-                 "id": f"W{variant}:hdr:others",
-                 "text": f"Остальные ({len(others)})",
-                 "style": "SectionHeader.TLabel"}
+                {
+                    "kind": "header",
+                    "id": f"W{variant}:hdr:others",
+                    "text": f"Остальные ({len(others)})",
+                    "style": "SectionHeader.TLabel",
+                }
             )
 
-            # сколько блоков «надо» для варианта (ВС6Д=3, ВС7=2) берём из данных
             max_needed = 0
             for key, blocks in others:
                 _, need = installed_count_for(key, blocks)
@@ -4036,38 +4181,39 @@ def _desired_work_sequence_variant(current_comments, variant: str):
                 cnt, _need = installed_count_for(key, blocks)
                 groups[cnt].append((key, blocks))
 
-            # вывод: от готовых к нулю
             for cnt in range(max_needed, -1, -1):
                 bucket = groups[cnt]
                 if not bucket:
                     continue
 
-                header_text = "Готовы к сборке" if cnt == max_needed else f"{cnt} " + _ru_plural(cnt) + " в наличии"
+                header_text = "Готовы к сборке" if cnt == max_needed else f"{cnt} {_ru_plural(cnt)} в наличии"
                 seq.append(
-                    {"kind": "header",
-                     "id": f"W{variant}:hdr:others:{cnt}",
-                     "text": f"{header_text} ({len(bucket)})",
-                     "style": "Header3.TLabel"}
+                    {
+                        "kind": "header",
+                        "id": f"W{variant}:hdr:others:{cnt}",
+                        "text": f"{header_text} ({len(bucket)})",
+                        "style": "Header3.TLabel",
+                    }
                 )
 
-                # внутри группы: по дате добавления, затем по номеру
                 bucket.sort(
                     key=lambda item: (
                         parse_date_str(product_dates.get(item[0], "01.01.00"), item[0]),
                         item[0][0],
                     )
                 )
+
                 for key, blocks in bucket:
                     seq.append(
-                        {"kind": "row",
-                         "key": key,
-                         "blocks": blocks,
-                         "in_storage": False,
-                         "show_factory_code": True}  # <- формат xxxx [z]
+                        {
+                            "kind": "row",
+                            "key": key,
+                            "blocks": blocks,
+                            "in_storage": False,
+                            "show_factory_code": True,
+                        }
                     )
 
-
-        # --- В ремонте (ВСЕГДА в самом конце) ---
         repair_items = []
         for factory in factory_order:
             for key, blocks in work_grouped[factory]:
@@ -4076,44 +4222,61 @@ def _desired_work_sequence_variant(current_comments, variant: str):
 
         if repair_items:
             seq.append(
-                {"kind": "header",
-                 "id": f"W{variant}:hdr:repair",
-                 "text": f"В ремонте ({len(repair_items)})",
-                 "style": "SectionHeader.TLabel"}
+                {
+                    "kind": "header",
+                    "id": f"W{variant}:hdr:repair",
+                    "text": f"В ремонте ({len(repair_items)})",
+                    "style": "SectionHeader.TLabel",
+                }
             )
+
             repair_items.sort(
                 key=lambda item: (
                     parse_date_str(product_dates.get(item[0], "01.01.00"), item[0]),
                     item[0][0],
                 )
             )
+
             for key, blocks in repair_items:
                 seq.append(
-                    {"kind": "row", "key": key, "blocks": blocks,
-                     "in_storage": False, "show_factory_code": True}
+                    {
+                        "kind": "row",
+                        "key": key,
+                        "blocks": blocks,
+                        "in_storage": False,
+                        "show_factory_code": True,
+                    }
                 )
+
         return seq
 
-    # ------------------------ 3) Базовый режим: завод -> дата ------------------------
     # ------------------------ 3) Базовый режим: завод -> дата ------------------------
     for factory in factory_order:
         items = work_grouped[factory]
         if not items:
             continue
 
-        # Заголовок завода
+        collapsed = _is_factory_collapsed(which="work", factory=factory, variant=variant)
+
         seq.append(
             {
                 "kind": "header",
                 "id": f"W{variant}:hdr:factory:{factory}",
-                "text": f"Завод: {factory}",
+                "text": f"Завод: {factory} ({len(items)})",
                 "style": "FactoryHeader.TLabel",
+                "header_type": "factory",
+                "factory": factory,
+                "variant": variant,
+                "which": "work",
+                "collapsed": collapsed,
             }
         )
 
-        # ✅ НОВОЕ: если скрываем даты — просто выводим изделия по номерам (возрастание)
+        if collapsed:
+            continue
+
         if globals().get("hide_added_date", False):
-            for key, blocks in sorted(items, key=lambda x: x[0][0]):  # x[0][0] = num4 ('0001'..)
+            for key, blocks in sorted(items, key=lambda x: x[0][0]):
                 seq.append(
                     {
                         "kind": "row",
@@ -4123,18 +4286,17 @@ def _desired_work_sequence_variant(current_comments, variant: str):
                         "show_factory_code": False,
                     }
                 )
-            continue  # следующий завод
+            continue
 
-        # --- СТАРОЕ ПОВЕДЕНИЕ: группировка по датам добавления ---
         by_date = {}
         for key, blocks in items:
             d = product_dates.get(key, "??.??.??")
             by_date.setdefault(d, []).append((key, blocks))
 
         for d in sorted(
-                by_date.keys(),
-                key=lambda dd: parse_date_str(dd, by_date[dd][0][0]),
-                reverse=sort_reverse,
+            by_date.keys(),
+            key=lambda dd: parse_date_str(dd, by_date[dd][0][0]),
+            reverse=sort_reverse,
         ):
             seq.append(
                 {
@@ -4144,6 +4306,7 @@ def _desired_work_sequence_variant(current_comments, variant: str):
                     "style": "Header3.TLabel",
                 }
             )
+
             for key, blocks in sorted(by_date[d], key=lambda x: x[0][0]):
                 seq.append(
                     {
@@ -4157,7 +4320,6 @@ def _desired_work_sequence_variant(current_comments, variant: str):
 
     return seq
 
-
 def normalize_repair_blocks():
     """Оставляем отметки ремонта только по 'нужным' для варианта блокам."""
     global repair_blocks
@@ -4169,12 +4331,13 @@ def normalize_repair_blocks():
         repair_blocks = cleaned
         save_data(False)  # тихо сохраняем
 
+
 def _desired_storage_sequence(current_comments):
     """Строим список для правой колонки «Ждут отправки на склад» с 2 режимами."""
     seq = []
     sort_reverse = (sort_order == "new_first")
 
-    # ----- РЕЖИМ 1: По датам (как раньше) -----
+    # ----- РЕЖИМ 1: По датам -----
     if storage_sort_mode == "dates":
         by_factory = {factory: [] for factory in factory_order}
         for key in storage_products:
@@ -4187,17 +4350,25 @@ def _desired_storage_sequence(current_comments):
             if not items:
                 continue
 
-            # Заголовок завода
+            collapsed = _is_factory_collapsed(which="storage", factory=factory)
+
             seq.append(
                 {
                     "kind": "header",
                     "id": f"S:hdr:factory:{factory}",
-                    "text": f"Завод: {factory}",
+                    "text": f"Завод: {factory} ({len(items)})",
                     "style": "FactoryHeader.TLabel",
+                    "header_type": "factory",
+                    "factory": factory,
+                    "variant": None,
+                    "which": "storage",
+                    "collapsed": collapsed,
                 }
             )
 
-            # Внутри — группировка по дате сборки (или дате добавления)
+            if collapsed:
+                continue
+
             by_date = {}
             for key in items:
                 date = storage_dates.get(key) or product_dates.get(key, "??.??.??")
@@ -4212,6 +4383,7 @@ def _desired_storage_sequence(current_comments):
                         "style": "Header3.TLabel",
                     }
                 )
+
                 for key in sorted(by_date[date], key=lambda k: k[0]):
                     seq.append(
                         {
@@ -4225,10 +4397,8 @@ def _desired_storage_sequence(current_comments):
         return seq
 
     # ----- РЕЖИМ 2: По моделям -----
-    # Собираем всё, что в хранилище и ещё не отправлено
     items = [k for k in storage_products if k not in assembled_products]
 
-    # Группы по модели (нормализуем ВС13 -> ВС7)
     groups = {"ВС6Д": [], "ВС7": []}
     for key in items:
         v = str(get_variant(key)).strip()
@@ -4241,39 +4411,81 @@ def _desired_storage_sequence(current_comments):
         except Exception:
             return 0
 
-    # Порядок секций: ВС6Д, затем ВС7 (как просили две шапки)
     for variant in ("ВС6Д", "ВС7"):
         bucket = groups[variant]
         if not bucket:
             continue
 
-        seq.append({
-            "kind": "header",
-            "id": f"S:hdr:variant:{variant}",
-            "text": f"{variant} ({len(bucket)})",
-            "style": "SectionHeader.TLabel",   # крупнее и без «Завод/Дата»
-        })
+        seq.append(
+            {
+                "kind": "header",
+                "id": f"S:hdr:variant:{variant}",
+                "text": f"{variant} ({len(bucket)})",
+                "style": "SectionHeader.TLabel",
+            }
+        )
 
-        # внутри — сортировка по номеру изделия возрастающе
         for key in sorted(bucket, key=_num):
-            seq.append({
-                "kind": "row",
-                "key": key,
-                "blocks": products.get(key, {}),
-                "in_storage": True,
-                "show_factory_code": True,     # нам нужен [z], но подпись выставим в refresh_storage_labels_in_place()
-            })
+            seq.append(
+                {
+                    "kind": "row",
+                    "key": key,
+                    "blocks": products.get(key, {}),
+                    "in_storage": True,
+                    "show_factory_code": True,
+                }
+            )
 
     return seq
-
 
 def _apply_sequence(frame, sequence, which, regroup=True, repack=True):
     current_comments = _get_current_comments()
     widgets_in_order, seen_vids = [], set()
 
+    def _is_structural_header_item(item: dict) -> bool:
+        """
+        Заголовки, которые реально меняют структуру списка.
+        Если они есть — список надо перепаковывать строго по sequence.
+        """
+        if item.get("kind") != "header":
+            return False
+
+        if item.get("header_type") == "factory":
+            return True
+
+        hid = str(item.get("id", ""))
+
+        if ":grp:" in hid:
+            return True
+        if ":hdr:drafts" in hid:
+            return True
+        if ":hdr:others" in hid:
+            return True
+        if ":hdr:repair" in hid:
+            return True
+        if ":hdr:factory:" in hid:
+            return True
+
+        return False
+
+    needs_full_repack = regroup or which == "storage" or any(
+        _is_structural_header_item(item) for item in sequence
+    )
+
     for item in sequence:
         if item["kind"] == "header":
-            w = _ensure_header(frame, item["id"], item["text"], item["style"])
+            w = _ensure_header(
+                parent=frame,
+                hid=item["id"],
+                text=item["text"],
+                style=item["style"],
+                repack=False,
+                header_type=item.get("header_type"),
+                factory=item.get("factory"),
+                variant=item.get("variant"),
+                which=item.get("which"),
+                collapsed=item.get("collapsed", False),
+            )
         else:
             w = _ensure_row(
                 parent=frame,
@@ -4285,10 +4497,11 @@ def _apply_sequence(frame, sequence, which, regroup=True, repack=True):
                 which=which,
                 repack=repack,
             )
+
         widgets_in_order.append(w)
         seen_vids.add(getattr(w, "_vid", None))
 
-    # подчистка лишнего (один раз)
+    # удалить лишние виджеты
     for child in list(frame.winfo_children()):
         vid = getattr(child, "_vid", None)
         if vid and vid not in seen_vids:
@@ -4297,82 +4510,41 @@ def _apply_sequence(frame, sequence, which, regroup=True, repack=True):
             except Exception:
                 pass
 
-    # ВАЖНО:
-    # - Для обычных списков уважаем флаг regroup (как было).
-    # - Для ХРАНИЛИЩА принудительно выполняем перегруппировку,
-    #   т.к. группы по датам без неё "залипают" под старым заголовком.
-    if which != "storage" and not regroup:
+    # если это не структурное обновление — выходим
+    if not needs_full_repack:
         return
 
-    # --- далее перестановка секций (как было) ---
-    def is_section_header(vid: str):
-        if not vid:
-            return False
-        if ":hdr:drafts" in vid:  return True
-        if ":hdr:repair" in vid:  return True
-        if ":hdr:others" in vid:  return True
-        if vid.startswith("S:hdr:factory:"): return True     # секция хранилища по заводу
-        if ":hdr:factory:" in vid: return True               # секции работы по заводу
-        return False
-
-    desired_groups = []
-    cur = []
-    for w in widgets_in_order:
-        vid = getattr(w, "_vid", "")
-        if getattr(w, "is_header", False) and is_section_header(vid):
-            if cur:
-                desired_groups.append(cur)
-            cur = [w]
-        else:
-            (cur or (cur := [])).append(w)
-    if cur:
-        desired_groups.append(cur)
-
-    def _pack(w, before=None):
+    def _pack_widget(w):
         try:
             w.pack_forget()
         except Exception:
             pass
+
+        if getattr(w, "is_factory_header", False):
+            w.pack(fill=X, pady=(10, 0))
+            return
+
         if getattr(w, "is_header", False):
             style_name = ""
             try:
                 style_name = str(w.cget("style"))
             except Exception:
                 pass
+
             if "FactoryHeader" in style_name:
-                kwargs = dict(anchor="w", pady=(10, 0))
+                w.pack(anchor="w", pady=(10, 0))
             else:
-                kwargs = dict(anchor="w", padx=10, pady=(10, 5))
-        else:
-            kwargs = dict(fill=X, pady=PADY_PRODUCT)
-        if before is not None:
-            w.pack(before=before, **kwargs)
-        else:
-            w.pack(**kwargs)
+                w.pack(anchor="w", padx=10, pady=(10, 5))
+            return
 
-    def current_order():
-        return [w for w in frame.winfo_children() if getattr(w, "_vid", None) in seen_vids]
+        # обычная строка изделия
+        w.pack(fill=X, pady=PADY_PRODUCT)
 
-    for i in range(len(desired_groups)):
-        cur_order = current_order()
-        try:
-            start = cur_order.index(desired_groups[i][0])
-            ok = all(
-                start + j < len(cur_order)
-                and cur_order[start + j] is desired_groups[i][j]
-                for j in range(len(desired_groups[i]))
-            )
-        except ValueError:
-            ok = False
-        if ok:
-            continue
-        later_firsts = [g[0] for g in desired_groups[i + 1 :] if g and g[0] in cur_order]
-        anchor = (min(later_firsts, key=lambda w: cur_order.index(w)) if later_firsts else None)
-        for w in reversed(desired_groups[i]):
-            _pack(w, before=anchor)
-            anchor = w
-
-
+    # ВАЖНО:
+    # пакуем СТРОГО в том порядке, как sequence был построен
+    for w in widgets_in_order:
+        _pack_widget(w)
+            
 def _capture_view(frame, canvas):
     """
     Снимок вида: (top_key, intra_offset, alt_key).
@@ -6400,10 +6572,14 @@ def center_window(initial=False):
 load_data()
 _load_block112_index()
 migrate_keys_to_4()
+
+# По умолчанию режим "Заготовки" выключен
 work_sort_mode = "factories"
 show_draft_group = False
 blockcount_mode = False
+
 root = tb.Window(themename="litera")
+
 root.tk.call("tk", "scaling", scaling_factor)
 root.title("serp-base")
 root.withdraw()
@@ -6790,7 +6966,10 @@ refresh_button = tb.Button(
 )
 refresh_button.pack(side=LEFT, padx=5)
 apply_vs6d_only_mode_ui()
-
+work_sort_mode = "factories"
+show_draft_group = False
+blockcount_mode = False
+update_sort_mode_button_visual()
 
 
 # Подпись циклической кнопки привести к текущему режиму
@@ -7145,14 +7324,14 @@ def create_settings_tab():
     ).pack(side=RIGHT, padx=10, pady=10)
     update_date_label = tb.Label(
         settings_container,
-        text= "Дата обновления: 23.12.2025",
+        text= "Дата обновления: 22.03.2026",
         style="Settings.TLabel",
         font=("Arial", 10, "italic"),
     )
     update_date_label.pack(side=BOTTOM, anchor="e", padx=10, pady=5)
     tb.Label(
         settings_container,
-        text="Версия программы: 13.1.7",
+        text="Версия программы: 13.1.8 betta",
         style="Settings.TLabel",
         font=("Arial", 10, "italic"),
     ).pack(side=BOTTOM, anchor="e", padx=10, pady=5)
