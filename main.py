@@ -407,6 +407,7 @@ xl_hints_161 = set()
 work_widgets, storage_widgets, header_widgets, date_header_widgets = {}, {}, {}, {}
 
 # --- сворачивание секций заводов ---
+# --- сворачивание секций заводов ---
 collapsed_factories_work = {
     "ВС6Д": set(),
     "ВС7": set(),
@@ -448,9 +449,11 @@ def toggle_factory_collapse(which: str, factory: str, variant: str = None):
     else:
         target.add(factory)
 
-    # Перерисовываем списки, стараясь сохранить текущую прокрутку
-    update_product_list(preserve_scroll=True, regroup=True)
+    # ВАЖНО: теперь сразу сохраняем
+    save_data(False)
 
+    # И только потом перерисовываем
+    update_product_list(preserve_scroll=True, regroup=True)
 def _xl_log(msg: str):
     # ЛОГИ XL ОТКЛЮЧЕНЫ: ничего не пишем на диск
     return
@@ -1825,13 +1828,19 @@ def save_data(show_message=False):
         "display_full_serials_storage": display_full_serials_storage,
         "show_draft_group": show_draft_group,
         "variant_overrides": {_k2s(k): v for k, v in variant_overrides.items()},
-        "vs7_112_meta": { _k2s(k): v for k, v in vs7_112_meta.items() },
+        "vs7_112_meta": {_k2s(k): v for k, v in vs7_112_meta.items()},
         "vs6d_only_mode": vs6d_only_mode,
         "hide_added_date": hide_added_date,
         "xl_max_rows": xl_max_rows,
         "last_year": (last_selected_year or (year_var.get().strip() if 'year_var' in globals() else None)),
-    }
 
+    # --- сохранение скрытых заводов ---
+        "collapsed_factories_work": {
+        "ВС6Д": sorted(list(collapsed_factories_work.get("ВС6Д", set()))),
+        "ВС7": sorted(list(collapsed_factories_work.get("ВС7", set()))),
+                                    },
+        "collapsed_factories_storage": sorted(list(collapsed_factories_storage)),
+        }
     # Разделяем словари по принадлежности к архиву
     archived = set(assembled_products)
 
@@ -1884,11 +1893,11 @@ def save_data(show_message=False):
         messagebox.showinfo("Сообщение", "Данные сохранены!")
 
 def load_data():
-    global products, assembled_products, storage_products
-    global comments, product_dates, assembly_dates, storage_dates, assembly_years
-    global draft_products, redy_products, marked_statuses, up112_hints, repair_blocks, locked_storage
-    global factory_order, sort_order, archive_view_mode, data_path, scaling_factor, show_draft_group, enable_vs13_mode, last_selected_year, display_full_serials, display_full_serials_storage
+    global factory_order, sort_order, archive_view_mode, data_path, scaling_factor
+    global show_draft_group, enable_vs13_mode, last_selected_year
+    global display_full_serials, display_full_serials_storage
     global block112_index
+    global collapsed_factories_work, collapsed_factories_storage
     _ensure_new_files_or_migrate()
     _load_block112_index()
 
@@ -1932,33 +1941,55 @@ def load_data():
 
     # настройки
     settings = base.get("settings", {})
+
     global xl_max_rows
     try:
         v = int(settings.get("xl_max_rows", xl_max_rows))
         xl_max_rows = max(1, min(XL_MAX_ROWS_LIMIT, v))
     except Exception:
         xl_max_rows = 120
+
     global variant_overrides, vs7_112_meta
     global display_full_serials
     global vs6d_only_mode
     global hide_added_date
+
     hide_added_date = _as_bool(settings.get("hide_added_date", False))
     vs6d_only_mode = _as_bool(settings.get("vs6d_only_mode", False))
     display_full_serials = _as_bool(settings.get("display_full_serials", display_full_serials))
-    display_full_serials_storage = _as_bool(settings.get("display_full_serials_storage", display_full_serials_storage))
+    display_full_serials_storage = _as_bool(
+    settings.get("display_full_serials_storage", display_full_serials_storage)
+)
     vs6d_only_mode = _as_bool(settings.get("vs6d_only_mode", vs6d_only_mode))
 
-    factory_order       = settings.get("factory_order", ["ВЕКТОР", "ИНТЕГРАЛ", "РЗП", "КНИИТМУ", "СВТ", "СИГНАЛ"])
-    sort_order          = settings.get("sort_order", "new_first")
-    archive_view_mode   = settings.get("archive_view_mode", "journal")
-    data_path           = SERP_BASE_DIR
-    scaling_factor      = settings.get("scaling_factor", 2.0)
-    show_draft_group    = settings.get("show_draft_group", False)
-    enable_vs13_mode    = settings.get("enable_vs13_mode", False)
-    last_selected_year  = settings.get("last_year", f"{datetime.now().year % 100:02d}")
-    variant_overrides = {_s2k(k): v for k, v in settings.get("variant_overrides", {}).items()}
-    vs7_112_meta = {_s2k(k): v for k, v in settings.get("vs7_112_meta", {}).items()}
+    factory_order = settings.get(
+    "factory_order",
+    ["ВЕКТОР", "ИНТЕГРАЛ", "РЗП", "КНИИТМУ", "СВТ", "СИГНАЛ"]
+)
+    sort_order = settings.get("sort_order", "new_first")
+    archive_view_mode = settings.get("archive_view_mode", "journal")
+    data_path = SERP_BASE_DIR
+    scaling_factor = settings.get("scaling_factor", 2.0)
+    show_draft_group = settings.get("show_draft_group", False)
+    enable_vs13_mode = settings.get("enable_vs13_mode", False)
+    last_selected_year = settings.get("last_year", f"{datetime.now().year % 100:02d}")
 
+    variant_overrides = {
+    _s2k(k): v for k, v in settings.get("variant_overrides", {}).items()
+}
+    vs7_112_meta = {
+    _s2k(k): v for k, v in settings.get("vs7_112_meta", {}).items()
+}
+
+# --- восстановление скрытых заводов ---
+    raw_collapsed_work = settings.get("collapsed_factories_work", {}) or {}
+    raw_collapsed_storage = settings.get("collapsed_factories_storage", []) or []
+
+    collapsed_factories_work = {
+    "ВС6Д": set(raw_collapsed_work.get("ВС6Д", []) or []),
+    "ВС7": set(raw_collapsed_work.get("ВС7", []) or []),
+}
+    collapsed_factories_storage = set(raw_collapsed_storage)
     # Миграции форматов ключей (2->3->4) поверх объединённых данных
     def _migrate_2to3(dct_like=None, set_like=None):
         changed = False
@@ -4262,7 +4293,7 @@ def _desired_work_sequence_variant(current_comments, variant: str):
             {
                 "kind": "header",
                 "id": f"W{variant}:hdr:factory:{factory}",
-                "text": f"Завод: {factory} ({len(items)})",
+                "text": f"{factory} ({len(items)})",
                 "style": "FactoryHeader.TLabel",
                 "header_type": "factory",
                 "factory": factory,
@@ -4356,7 +4387,7 @@ def _desired_storage_sequence(current_comments):
                 {
                     "kind": "header",
                     "id": f"S:hdr:factory:{factory}",
-                    "text": f"Завод: {factory} ({len(items)})",
+                    "text": f"{factory} ({len(items)})",
                     "style": "FactoryHeader.TLabel",
                     "header_type": "factory",
                     "factory": factory,
@@ -6674,10 +6705,10 @@ frame_main = tb.Frame(notebook, style="Main.TFrame")
 frame_assembly = tb.Frame(notebook, style="Main.TFrame")
 frame_request = tb.Frame(notebook, style="Main.TFrame")
 frame_settings = tb.Frame(notebook, style="Settings.TFrame")
-notebook.add(frame_main, text="     Основной учёт     ")
-notebook.add(frame_assembly, text="    Архив сборки    ")
-notebook.add(frame_request, text="     Запросить блоки     ")
-notebook.add(frame_settings, text="     Настройки     ")
+notebook.add(frame_main, text="         Основной учёт         ")
+notebook.add(frame_assembly, text="        Архив сборки        ")
+notebook.add(frame_request, text="       Запросить блоки       ")
+notebook.add(frame_settings, text="          Настройки          ")
 request_panel = tb.Frame(frame_request, style="Main.TFrame")
 request_panel.pack(fill=BOTH, expand=True, padx=10, pady=10)
 filter_frame = tb.Frame(request_panel, style="Main.TFrame")
